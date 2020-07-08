@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <div id="game"></div>
+</body>
+<script src="https://threejs.org/build/three.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r92/examples/js/loaders/GLTFLoader.js"></script>
+
+<script>
+    //declaration variable
+    var sceneWidth;
+    var sceneHeight;
+    var camera;
+    var scene;
+    var renderer;
+    var dom;
+    var sun;
+    var ground;
+    //var orbitControl;
+    var rollingGroundSphere;
+    var heroSphere;
+    var rollingSpeed = 0.008;
+    var heroRollingSpeed;
+    var worldRadius = 26;
+    var heroRadius = 0.2;
+    var sphericalHelper;
+    var pathAngleValues;
+    var heroBaseY = 1.8;
+    var bounceValue = 0.1;
+    var gravity = 0.005;
+    var leftLane = -1;
+    var rightLane = 1;
+    var middleLane = 0;
+    var currentLane;
+    var clock;
+    var jumping;
+    var pyramidReleaseInterval = 0.5;
+    var pyramidsInPath;
+    var pyramidsPool;
+    var particleGeometry;
+    var particleCount = 20;
+    var explosionPower = 1.06;
+    var particles;
+
+    var scoreText;
+    var score;
+    var hasCollided;
+    init();
+
+    function init() {
+        // set up the scene
+        createScene();
+
+        //call game loop
+        update();
+    }
+
+    function createAudio() {
+        var listener = new THREE.AudioListener();
+
+        var sound = new THREE.Audio(listener);
+        sound.autoplay = true;
+        var audioLoader = new THREE.AudioLoader();
+        audioLoader.load('egypt.mp3', function (buffer) {
+            sound.setBuffer(buffer);
+            sound.setLoop(true);
+            sound.setVolume(0.5);
+            sound.play();
+        });
+        scene.add(listener)
+    }
+
+    function createScene() {
+        hasCollided = false;
+        score = 0;
+        //set de pyramies dans le jeu
+        pyramidsInPath = [];
+        //on definit un set de pyramides a  venir
+        pyramidsPool = [];
+        //on utiliser des timers pour le mvmt
+        clock = new THREE.Clock();
+        clock.start();
+        heroRollingSpeed = (rollingSpeed * worldRadius / heroRadius) / 5;
+        sphericalHelper = new THREE.Spherical();
+        pathAngleValues = [1.52, 1.57, 1.62];
+        //init de la scene
+        sceneWidth = window.innerWidth;
+        sceneHeight = window.innerHeight;
+        scene = new THREE.Scene();
+        //sert pour l'illusion de profondeur 
+        scene.fog = new THREE.FogExp2(0xCCCCCC, 0.14);
+        //perspective camera
+        camera = new THREE.PerspectiveCamera(60, sceneWidth / sceneHeight, 0.1, 1000);
+        renderer = new THREE.WebGLRenderer({
+            alpha: true
+        });
+
+        //init du renderer
+        renderer.setClearColor(0xfffafa, 1);
+        renderer.shadowMap.enabled = true; //enable shadow
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.setSize(sceneWidth, sceneHeight);
+        dom = document.getElementById('game');
+        dom.appendChild(renderer.domElement);
+
+        //appel des differentes pieces(heros,pyramids,audio,etc..)
+        createAudio();
+        createPyramidsPool();
+        addWorld();
+        addHero();
+        addLight();
+        addExplosion();
+        camera.position.z = 6.5;
+        camera.position.y = 2.5;
+
+        //On ecoute la pression d'une touche
+        document.onkeydown = handleKeyDown;
+
+        //Score affichage et consignes
+        scoreText = document.createElement('div');
+        scoreText.style.position = 'absolute';
+        scoreText.style.width = 100;
+        scoreText.style.height = 100;
+        scoreText.style.color = "red";
+        scoreText.style.fontSize = "15px";
+        scoreText.style.fontWeight = "20px";
+        scoreText.innerHTML = "0";
+        scoreText.style.top = 50 + 'px';
+        scoreText.style.left = 49 + '%';
+        document.body.appendChild(scoreText);
+        var infoText = document.createElement('div');
+        infoText.style.position = 'absolute';
+        infoText.style.width = 100;
+        infoText.style.height = 100;
+        infoText.style.backgroundColor = "yellow";
+        infoText.innerHTML = "Fleche haut - Sauter, Droite/Gauche - Bouger";
+        infoText.style.top = 10 + 'px';
+        infoText.style.left = 41 + '%';
+        document.body.appendChild(infoText);
+    }
+
+    //explosion lorsqu'on rencontre un obstacle
+    function addExplosion() {
+        particleGeometry = new THREE.Geometry();
+        for (var i = 0; i < particleCount; i++) {
+            var vertex = new THREE.Vector3();
+            particleGeometry.vertices.push(vertex);
+        }
+
+        var textureRound = new THREE.TextureLoader().load('textures/round.png');
+        var pMaterial = new THREE.ParticleBasicMaterial({
+            color: 0xfffafa,
+            size: 0.2,
+            map: THREE.ImageUtils.loadTexture(
+                "textures/round.png"
+            ),
+        });
+        // immediately use the texture for material creation
+        /* var roundMaterial = new THREE.MeshBasicMaterial({
+             color: 0xfffafa,
+             map: textureRound,
+             size: 0.2
+         });*/
+        particles = new THREE.Points(particleGeometry, pMaterial);
+
+
+        particles
+        scene.add(particles);
+        particles.visible = false;
+    }
+
+    //Creation du set de pyramides dans lequel on va piocher au fur et à mesure
+    function createPyramidsPool() {
+        var maxPyramidsInPool = 10;
+        var newPyramid;
+        for (var i = 0; i < maxPyramidsInPool; i++) {
+            newPyramid = createPyramid();
+            pyramidsPool.push(newPyramid);
+        }
+    }
+
+    //gestion de la pression des touches si droite/gauche/haut
+    function handleKeyDown(keyEvent) {
+        if (jumping) return;
+        var validMove = true;
+        if (keyEvent.keyCode === 37) { //left
+            if (currentLane == middleLane) {
+                currentLane = leftLane;
+            } else if (currentLane == rightLane) {
+                currentLane = middleLane;
+            } else {
+                validMove = false;
+            }
+        } else if (keyEvent.keyCode === 39) { //right
+            if (currentLane == middleLane) {
+                currentLane = rightLane;
+            } else if (currentLane == leftLane) {
+                currentLane = middleLane;
+            } else {
+                validMove = false;
+            }
+        } else {
+            if (keyEvent.keyCode === 38) { //up, jump
+                bounceValue = 0.1;
+                jumping = true;
+            }
+            validMove = false;
+        }
+        //heroSphere.position.x=currentLane;
+        if (validMove) {
+            jumping = true;
+            bounceValue = 0.06;
+        }
+    }
+
+    //ajout de la boule(position,texture,etc..)
+    function addHero() {
+        var sphereGeometry = new THREE.DodecahedronGeometry(heroRadius, 1);
+        var texture = new THREE.TextureLoader().load('textures/land_ocean_ice_cloud_2048.jpg');
+        let loaderT = new THREE.TextureLoader();
+        var sphereMaterial = new THREE.MeshStandardMaterial({
+            color: 0xe5f2f2,
+            map: loaderT.load('textures/napo.png'),
+            shading: THREE.FlatShading
+        })
+
+
+        jumping = false;
+        heroSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+        heroSphere.receiveShadow = true;
+        heroSphere.castShadow = true;
+        scene.add(heroSphere);
+        heroSphere.position.y = heroBaseY;
+        heroSphere.position.z = 4.8;
+        currentLane = middleLane;
+        heroSphere.position.x = currentLane;
+    }
+
+    //Ajout du monde en mouvement(sol,ciel,etc...)
+    function addWorld() {
+        var sides = 40;
+        var tiers = 40;
+        let texture = new THREE.TextureLoader().load("textures/test.jpeg");
+        var sphereGeometry = new THREE.SphereGeometry(worldRadius, sides, tiers);
+        var sphereMaterial = new THREE.MeshStandardMaterial({
+            map: texture,
+            shading: THREE.FlatShading
+        })
+        var vertexIndex;
+        var vertexVector = new THREE.Vector3();
+        var nextVertexVector = new THREE.Vector3();
+        var firstVertexVector = new THREE.Vector3();
+        var offset = new THREE.Vector3();
+        var currentTier = 1;
+        var lerpValue = 0.5;
+        var heightValue;
+        var maxHeight = 0.07;
+        for (var j = 1; j < tiers - 2; j++) {
+            currentTier = j;
+            for (var i = 0; i < sides; i++) {
+                vertexIndex = (currentTier * sides) + 1;
+                vertexVector = sphereGeometry.vertices[i + vertexIndex].clone();
+                if (j % 2 !== 0) {
+                    if (i == 0) {
+                        firstVertexVector = vertexVector.clone();
+                    }
+                    nextVertexVector = sphereGeometry.vertices[i + vertexIndex + 1].clone();
+                    if (i == sides - 1) {
+                        nextVertexVector = firstVertexVector;
+                    }
+                    lerpValue = (Math.random() * (0.75 - 0.25)) + 0.25;
+                    vertexVector.lerp(nextVertexVector, lerpValue);
+                }
+                heightValue = (Math.random() * maxHeight) - (maxHeight / 2);
+                offset = vertexVector.clone().normalize().multiplyScalar(heightValue);
+                sphereGeometry.vertices[i + vertexIndex] = (vertexVector.add(offset));
+            }
+        }
+        rollingGroundSphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+        rollingGroundSphere.receiveShadow = true;
+        rollingGroundSphere.castShadow = false;
+        rollingGroundSphere.rotation.z = -Math.PI / 2;
+        scene.add(rollingGroundSphere);
+        rollingGroundSphere.position.y = -24;
+        rollingGroundSphere.position.z = 2;
+        addWorldPyramids();
+
+
+        var uniforms = {
+            "topColor": {
+                value: new THREE.Color(0x0077ff)
+            },
+            "bottomColor": {
+                value: new THREE.Color(0xffffff)
+            },
+            "offset": {
+                value: 33
+            },
+            "exponent": {
+                value: 0.6
+            }
+        };
+        hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x87ceeb, 0.6);
+        hemiLight.color.setHSL(0.6, 1, 0.6);
+        hemiLight.groundColor.setHSL(0.095, 1, 0.75);
+        hemiLight.position.set(0, 50, 0);
+        uniforms["topColor"].value.copy(hemiLight.color);
+
+        var skyGeo = new THREE.SphereBufferGeometry(4000, 32, 15);
+        var skyMat = new THREE.ShaderMaterial({
+            uniforms: uniforms,
+            vertexShader: "varying",
+            fragmentShader: "topColor",
+            side: THREE.BackSide
+        });
+        var sky = new THREE.Mesh(skyGeo, skyMat);
+        scene.add(sky);
+
+    }
+
+    //ajout de la couleur globale
+    function addLight() {
+        scene.add(new THREE.AmbientLight(0x666666));
+
+        var light = new THREE.DirectionalLight(0xdfebff, 1);
+        light.position.set(50, 200, 100);
+        light.position.multiplyScalar(1.3);
+
+        light.castShadow = true;
+
+        light.shadow.mapSize.width = 1024;
+        light.shadow.mapSize.height = 1024;
+
+        var d = 300;
+
+        light.shadow.camera.left = -d;
+        light.shadow.camera.right = d;
+        light.shadow.camera.top = d;
+        light.shadow.camera.bottom = -d;
+
+        light.shadow.camera.far = 1000;
+        scene.background = new THREE.Color(0x2d5d83);
+        //scene.add(light);
+        scene.background = new THREE.Color(0xcce0ff);
+        var hemisphereLight = new THREE.HemisphereLight(0xfffafa, 0x000000, .9)
+        scene.add(hemisphereLight);
+        sun = new THREE.DirectionalLight(0xcdc1c5, 0.9);
+        sun.position.set(12, 6, -7);
+        sun.position.multiplyScalar(1.3);
+        sun.castShadow = true;
+        scene.add(sun);
+        //Set up shadow properties for the sun light
+        sun.shadow.mapSize.width = 256;
+        sun.shadow.mapSize.height = 256;
+        sun.shadow.camera.near = 0.5;
+        sun.shadow.camera.far = 100;
+    }
+
+    //gestion de la position aléatoire des pyramides
+    function addPathPyramid() {
+        var options = [0, 1, 2];
+        var lane = Math.floor(Math.random() * 3);
+        addPyramid(true, lane);
+        options.splice(lane, 1);
+        if (Math.random() > 0.5) {
+            lane = Math.floor(Math.random() * 2);
+            addPyramid(true, options[lane]);
+        }
+    }
+
+    //ajout des pyramides si besoin
+    function addWorldPyramids() {
+        var numPyramids = 36;
+        var gap = 6.28 / 36;
+        for (var i = 0; i < numPyramids; i++) {
+            addPyramid(false, i * gap, true);
+            addPyramid(false, i * gap, false);
+        }
+    }
+
+    //ajout des pyramides si plus dans le pool
+    function addPyramid(inPath, row, isLeft) {
+        var newPyramid;
+        if (inPath) {
+            if (pyramidsPool.length == 0) return;
+            newPyramid = pyramidsPool.pop();
+            newPyramid.visible = true;
+            pyramidsInPath.push(newPyramid);
+            sphericalHelper.set(worldRadius - 0.3, pathAngleValues[row], -rollingGroundSphere.rotation.x + 4);
+        } else {
+            newPyramid = createPyramid();
+
+            var forestAreaAngle = 0; //[1.52,1.57,1.62];
+            if (isLeft) {
+                forestAreaAngle = 1.68 + Math.random() * 0.1;
+            } else {
+                forestAreaAngle = 1.46 - Math.random() * 0.1;
+            }
+            sphericalHelper.set(worldRadius - 0.3, forestAreaAngle, row);
+        }
+        newPyramid.position.setFromSpherical(sphericalHelper);
+        var rollingGroundVector = rollingGroundSphere.position.clone().normalize();
+        var pyramidVector = newPyramid.position.clone().normalize();
+        newPyramid.quaternion.setFromUnitVectors(pyramidVector, rollingGroundVector);
+        newPyramid.rotation.x += (Math.random() * (2 * Math.PI / 10)) + -Math.PI / 10;
+
+        rollingGroundSphere.add(newPyramid);
+    }
+
+    //creation d'une pyramide forme etc
+    function createPyramid() {
+        var sides = 8;
+        var tiers = 6;
+        var scalarMultiplier = (Math.random() * (0.25 - 0.1)) + 0.05;
+        var midPointVector = new THREE.Vector3();
+        var vertexVector = new THREE.Vector3();
+        var pyramidGeometry = new THREE.ConeGeometry(0.5, 1, sides, tiers);
+        var pyramidMaterial = new THREE.MeshStandardMaterial({
+            color: 0xc2b280,
+            shading: THREE.FlatShading
+        });
+
+        var offset;
+        midPointVector = pyramidGeometry.vertices[0].clone();
+        var currentTier = 0;
+        var vertexIndex;
+        blowUpPyramid(pyramidGeometry.vertices, sides, 0, scalarMultiplier);
+        tightenPyramid(pyramidGeometry.vertices, sides, 1);
+        blowUpPyramid(pyramidGeometry.vertices, sides, 2, scalarMultiplier * 1.1, true);
+        tightenPyramid(pyramidGeometry.vertices, sides, 3);
+        blowUpPyramid(pyramidGeometry.vertices, sides, 4, scalarMultiplier * 1.2);
+        tightenPyramid(pyramidGeometry.vertices, sides, 5);
+
+        var geometry = new THREE.Geometry();
+        geometry.vertices = [
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Vector3(0, 1, 0),
+            new THREE.Vector3(1, 1, 0),
+            new THREE.Vector3(1, 0, 0),
+            new THREE.Vector3(0.5, 0.5, 1)
+        ];
+
+        geometry.faces = [
+            new THREE.Face3(0, 1, 2),
+            new THREE.Face3(0, 2, 3),
+            new THREE.Face3(1, 0, 4),
+            new THREE.Face3(2, 1, 4),
+            new THREE.Face3(3, 2, 4),
+            new THREE.Face3(0, 3, 4)
+        ];
+        let loaderT = new THREE.TextureLoader();
+        const material = new THREE.MeshBasicMaterial({
+            map: loaderT.load('https://threejsfundamentals.org/threejs/resources/images/wall.jpg'),
+        });
+        const cube = new THREE.Mesh(geometry, material);
+        var pyramidTop = new THREE.Mesh(geometry, material);
+        /*
+        });
+        var pyramidTrunk = new THREE.Mesh(pyramidTrunkGeometry, trunkMaterial);
+        pyramidTrunk.position.y = 0.25;*/
+        var pyramid = new THREE.Object3D();
+        // pyramid.add(pyramidTrunk);
+        pyramid.add(pyramidTop);
+        return pyramid;
+    }
+
+    //deformation d'un epyramide a l'explosion
+    function blowUpPyramid(vertices, sides, currentTier, scalarMultiplier, odd) {
+        var vertexIndex;
+        var vertexVector = new THREE.Vector3();
+        var midPointVector = vertices[0].clone();
+        var offset;
+        for (var i = 0; i < sides; i++) {
+            vertexIndex = (currentTier * sides) + 1;
+            vertexVector = vertices[i + vertexIndex].clone();
+            midPointVector.y = vertexVector.y;
+            offset = vertexVector.sub(midPointVector);
+            if (odd) {
+                if (i % 2 === 0) {
+                    offset.normalize().multiplyScalar(scalarMultiplier / 6);
+                    vertices[i + vertexIndex].add(offset);
+                } else {
+                    offset.normalize().multiplyScalar(scalarMultiplier);
+                    vertices[i + vertexIndex].add(offset);
+                    vertices[i + vertexIndex].y = vertices[i + vertexIndex + sides].y + 0.05;
+                }
+            } else {
+                if (i % 2 !== 0) {
+                    offset.normalize().multiplyScalar(scalarMultiplier / 6);
+                    vertices[i + vertexIndex].add(offset);
+                } else {
+                    offset.normalize().multiplyScalar(scalarMultiplier);
+                    vertices[i + vertexIndex].add(offset);
+                    vertices[i + vertexIndex].y = vertices[i + vertexIndex + sides].y + 0.05;
+                }
+            }
+        }
+    }
+
+    //si proche d'une pyramide alors poiitn as mrqué
+    function tightenPyramid(vertices, sides, currentTier) {
+        var vertexIndex;
+        var vertexVector = new THREE.Vector3();
+        var midPointVector = vertices[0].clone();
+        var offset;
+        for (var i = 0; i < sides; i++) {
+            vertexIndex = (currentTier * sides) + 1;
+            vertexVector = vertices[i + vertexIndex].clone();
+            midPointVector.y = vertexVector.y;
+            offset = vertexVector.sub(midPointVector);
+            offset.normalize().multiplyScalar(0.06);
+            vertices[i + vertexIndex].sub(offset);
+        }
+    }
+
+    //update du monde
+    function update() {
+        //stats.update();
+        //animate
+        rollingGroundSphere.rotation.x += rollingSpeed;
+        heroSphere.rotation.x -= heroRollingSpeed;
+        if (heroSphere.position.y <= heroBaseY) {
+            jumping = false;
+            bounceValue = (Math.random() * 0.04) + 0.005;
+        }
+        heroSphere.position.y += bounceValue;
+        heroSphere.position.x = THREE.Math.lerp(heroSphere.position.x, currentLane, 2 * clock
+            .getDelta()); //clock.getElapsedTime());
+        bounceValue -= gravity;
+        if (clock.getElapsedTime() > pyramidReleaseInterval) {
+            clock.start();
+            addPathPyramid();
+            if (!hasCollided) {
+                score += 2 * pyramidReleaseInterval;
+                scoreText.innerHTML = score.toString();
+            } else {
+
+            }
+        }
+        doPyramidLogic();
+        doExplosionLogic();
+        render();
+        requestAnimationFrame(update); //request next update
+    }
+
+    //detection si une pyramide est touché et enlevement d'une pyramide si en arrière de la balle
+    function doPyramidLogic() {
+        var onePyramid;
+        var pyramidPos = new THREE.Vector3();
+        var pyramidsToRemove = [];
+        pyramidsInPath.forEach(function (element, index) {
+            onePyramid = pyramidsInPath[index];
+            pyramidPos.setFromMatrixPosition(onePyramid.matrixWorld);
+            if (pyramidPos.z > 6 && onePyramid.visible) { //gone out of our view zone
+                pyramidsToRemove.push(onePyramid);
+            } else { //check collision
+                if (pyramidPos.distanceTo(heroSphere.position) <= 0.6) {
+                    //   console.log("hit");
+                    hasCollided = true;
+                    explode();
+                }
+            }
+        });
+        var fromWhere;
+        pyramidsToRemove.forEach(function (element, index) {
+            onePyramid = pyramidsToRemove[index];
+            fromWhere = pyramidsInPath.indexOf(onePyramid);
+            pyramidsInPath.splice(fromWhere, 1);
+            pyramidsPool.push(onePyramid);
+            onePyramid.visible = false;
+        });
+    }
+
+    //explosion dans quel sens comment
+    function doExplosionLogic() {
+        if (!particles.visible) return;
+        for (var i = 0; i < particleCount; i++) {
+            particleGeometry.vertices[i].multiplyScalar(explosionPower);
+        }
+        if (explosionPower > 1.005) {
+            explosionPower -= 0.001;
+        } else {
+            particles.visible = false;
+        }
+        particleGeometry.verticesNeedUpdate = true;
+    }
+
+    //detaild'une explosion
+    function explode() {
+        particles.position.y = 2;
+        particles.position.z = 4.8;
+        particles.position.x = heroSphere.position.x;
+        for (var i = 0; i < particleCount; i++) {
+            var vertex = new THREE.Vector3();
+            vertex.x = -0.2 + Math.random() * 0.4;
+            vertex.y = -0.2 + Math.random() * 0.4;
+            vertex.z = -0.2 + Math.random() * 0.4;
+            particleGeometry.vertices[i] = vertex;
+
+            particleGeometry.vertices[i] = vertex;
+            //  const cube = new THREE.Mesh(geometry, material);
+        }
+        explosionPower = 1.07;
+        particles.visible = true;
+    }
+
+    //render
+    function render() {
+        renderer.render(scene, camera); //draw
+    }
+</script>
+
+</html>
